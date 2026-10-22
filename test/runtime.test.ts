@@ -29,7 +29,7 @@ test("real durable storage completes and reuses original submission after reopen
     runtime = await DurableRuntime.open(dir, task, fixtureModels());
     await runtime.run(task);
     assert.equal((await runtime.status()).state, "completed");
-    const inspection = await runtime.inspect();
+    const inspection = await runtime.inspect("transcript");
     assert.equal(inspection.entries.filter((entry: any) => entry.kind === "pi.user").length, 1);
     assert.ok(inspection.usage);
   } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
@@ -65,7 +65,7 @@ test("missing model blocks execution, not inspection or cancellation", async () 
     await until(() => runtime.status(), status => status.state === "waiting_for_input");
     await runtime.close();
     runtime = await DurableRuntime.open(dir, task, createModels());
-    assert.ok((await runtime.inspect()).entries.length);
+    assert.ok((await runtime.inspect("transcript")).entries.length);
     await assert.rejects(runtime.run(task), /Selected model unavailable/);
     await runtime.cancel();
     assert.equal((await runtime.status()).state, "failed");

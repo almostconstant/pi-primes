@@ -10,6 +10,7 @@ export async function serve(engine: Engine, home: string) {
     response.setHeader("content-type", "application/json");
     try {
       if (request.method !== "POST" || request.url !== "/rpc") throw new Error("Unknown endpoint");
+      request.setEncoding("utf8");
       let body = "";
       for await (const chunk of request) {
         body += chunk.toString();
@@ -22,7 +23,7 @@ export async function serve(engine: Engine, home: string) {
         case "ping": value = { pid: process.pid, version: 1 }; break;
         case "start": value = await engine.start(args[0]); break;
         case "list": value = await engine.list(args[0]); break;
-        case "inspect": value = await engine.inspect(args[0]); break;
+        case "inspect": value = await engine.inspect(args[0], args[1]); break;
         case "reply": value = await engine.reply(args[0], args[1]); break;
         case "resume": value = await engine.resume(args[0]); break;
         case "cancel": value = await engine.cancel(args[0]); break;

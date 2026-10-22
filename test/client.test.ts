@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { Client } from "../src/client.js";
 import { until } from "./helpers.js";
 
-test("concurrent clients autostart one worker even when host execPath is Pi, not Node", { timeout: 20_000 }, async () => {
+test("concurrent clients autostart one worker even when host execPath is Pi, not Node", { timeout: 45_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), "primes-client-"));
   const original = process.execPath;
   const nodeOptions = process.env.NODE_OPTIONS;

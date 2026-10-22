@@ -57,12 +57,18 @@ async function setup(t: TestContext) {
   const execute = (name: string, params: unknown) => tools.get(name).execute("call", params, undefined, undefined, ctx);
   const append = async (durable = true) => {
     const message = sent.at(-1).message;
-    const entry = { type: "custom_message", id: "notification", parentId: leaf, ...message };
+    const entry = { type: "custom_message", id: `notification-${branch.length}`, parentId: leaf, ...message };
     branch.push(entry); leaf = entry.id;
-    if (durable) await writeFile(file, JSON.stringify(entry) + "\n");
+    if (durable) await writeFile(file, branch.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  };
+  const respond = async (durable = true, stopReason = "stop") => {
+    const entry = { type: "message", id: `response-${branch.length}`, parentId: leaf,
+      message: { role: "assistant", stopReason, content: [{ type: "text", text: "Handled" }] } };
+    branch.push(entry); leaf = entry.id;
+    if (durable) await writeFile(file, branch.map(entry => JSON.stringify(entry)).join("\n") + "\n");
   };
   t.after(async () => { await emit("session_shutdown"); t.mock.timers.reset(); await rm(dir, { recursive: true, force: true }); });
-  return { job, owner, client, ctx, sent, acks, starts, attaches, statuses, listCalls, emit, tick, execute, append,
+  return { job, owner, client, ctx, sent, acks, starts, attaches, statuses, listCalls, emit, tick, execute, append, respond,
     setJobs(value: JobSummary[]) { jobs = value; }, setBranch(value: any[]) { branch = value; leaf = "other"; } };
 }
 
@@ -78,8 +84,13 @@ test("factory has no polling; start captures model/owner and explicit context", 
 
 test("inspection keeps context/transcript out unless explicitly requested", async (t) => {
   const h = await setup(t);
-  h.client.inspect = async () => ({ job: { ...h.job, context: "private-context", input: "input", result: "Final answer" },
-    recordPath: "/state/job.json", worker: { pid: 1 }, usage: {}, blocked: [], entries: ["full-transcript"], live: {} });
+  const details: unknown[] = [];
+  h.client.inspect = async (_id?: string, detail?: string) => {
+    details.push(detail);
+    return { job: { ...h.job, ...(detail === "status" ? {} : { result: "Final answer" }) },
+      recordPath: "/state/job.json", storagePath: "/state/durable", worker: { pid: 1 }, usage: {}, blocked: [],
+      entries: detail === "transcript" ? ["full-transcript"] : [], live: null, truncated: false };
+  };
   const status = await h.execute("durable_inspect", { id: "j1" });
   assert.doesNotMatch(status.content[0].text, /private-context|full-transcript|Final answer/);
   const answer = await h.execute("durable_inspect", { id: "j1", detail: "result" });
@@ -87,6 +98,7 @@ test("inspection keeps context/transcript out unless explicitly requested", asyn
   assert.doesNotMatch(answer.content[0].text, /private-context|full-transcript/);
   const transcript = await h.execute("durable_inspect", { id: "j1", detail: "transcript" });
   assert.match(transcript.content[0].text, /full-transcript/);
+  assert.deepEqual(details, ["status", "result", "transcript"]);
 });
 
 test("routine polling is status-only and stops on shutdown", async (t) => {
@@ -100,7 +112,7 @@ test("routine polling is status-only and stops on shutdown", async (t) => {
   assert.equal(h.listCalls.length, count);
 });
 
-test("busy attention stays durable until idle; acknowledgment requires disk entry", async (t) => {
+test("busy attention stays durable; acknowledgment requires persisted receipt and completed response", async (t) => {
   const h = await setup(t);
   h.job.attention = { id: "e1", kind: "needs_input", message: "Why?".repeat(500), acknowledged: false };
   h.ctx.isIdle = () => false;
@@ -122,7 +134,40 @@ test("busy attention stays durable until idle; acknowledgment requires disk entr
   assert.equal(h.acks.length, 0);
   await h.append();
   await h.tick();
+  assert.equal(h.acks.length, 0, "receipt alone cannot consume wakeup");
+  await h.respond(false);
+  await h.tick();
+  assert.equal(h.acks.length, 0, "response must also reach disk");
+  await h.respond();
+  await h.tick();
   assert.deepEqual(h.acks[0], ["j1", "e1"]);
+});
+
+test("reconnect wakes saved receipts without completed response; parent failures do not cause retry loops", async (t) => {
+  const h = await setup(t);
+  h.job.attention = { id: "e1", kind: "needs_input", message: "Need context", acknowledged: false };
+  await h.emit("session_start");
+  await h.append();
+  await h.tick();
+  assert.equal(h.acks.length, 0);
+  assert.equal(h.sent.length, 1);
+  await h.emit("session_shutdown");
+  await h.emit("session_start");
+  assert.equal(h.sent.length, 2, "saved receipt without response must wake on reconnect");
+  await h.append();
+  await h.respond(true, "aborted");
+  await h.respond(true, "error");
+  await h.respond(true, "toolUse");
+  await h.tick();
+  await h.tick();
+  assert.equal(h.acks.length, 0);
+  assert.equal(h.sent.length, 2, "no automatic spending loop after failed/aborted wakeup");
+  await h.emit("session_start");
+  assert.equal(h.sent.length, 3);
+  await h.append();
+  await h.respond();
+  await h.tick();
+  assert.deepEqual(h.acks, [["j1", "e1"]]);
 });
 
 test("restart deduplicates transcript before retrying failed acknowledgment", async (t) => {
@@ -131,6 +176,7 @@ test("restart deduplicates transcript before retrying failed acknowledgment", as
   h.job.state = "completed";
   await h.emit("session_start");
   await h.append();
+  await h.respond();
   h.client.acknowledge = async () => { throw new Error("offline"); };
   await h.emit("session_start");
   assert.equal(h.sent.length, 1);
@@ -150,6 +196,7 @@ test("foreign owners never wake; idle owner wakes; exact event required", async 
   await h.tick();
   assert.equal(h.sent[0].options.triggerTurn, true);
   await h.append();
+  await h.respond();
   await assert.rejects(h.execute("durable_acknowledge", { id: "j1", eventId: "old" }), /Exact attention/);
   await h.execute("durable_acknowledge", { id: "j1", eventId: "e1" });
   assert.deepEqual(h.acks, [["j1", "e1"]]);

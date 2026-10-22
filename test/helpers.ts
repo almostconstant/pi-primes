@@ -30,6 +30,11 @@ export function fixtureModels() {
         } else if (goal.startsWith("shell:") && !results.length) {
           answer.stopReason = "toolUse";
           answer.content = [{ type: "toolCall", id: "shell", name: "bash", arguments: { command: goal.slice(6) } }];
+        } else if (goal.startsWith("read:") && !results.length) {
+          answer.stopReason = "toolUse";
+          answer.content = [{ type: "toolCall", id: "read", name: "read", arguments: { path: goal.slice(5) } }];
+        } else if (goal.startsWith("read:")) {
+          answer.content = [{ type: "text", text: "Read image" }];
         } else if (results.length) {
           answer.content = [{ type: "text", text: `Observed: ${JSON.stringify(results)}` }];
         }

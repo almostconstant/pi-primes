@@ -5,7 +5,7 @@ import { mkdir, open, chmod } from "node:fs/promises";
 import { request } from "node:http";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Inspection, JobClient, JobSummary, ListInput, Owner, StartInput } from "./types.js";
+import type { InspectDetail, Inspection, JobClient, JobSummary, ListInput, Owner, StartInput } from "./types.js";
 
 export function stateDirectory() {
   return resolve(process.env.PI_PRIMES_HOME ?? join(homedir(), ".local", "state", "pi-primes"));
@@ -41,7 +41,7 @@ export class Client implements JobClient {
     }
     await mkdir(this.home, { recursive: true, mode: 0o700 });
     await chmod(this.home, 0o700);
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
       // A shutting-down worker may release its socket before its lock. Retry lock acquisition.
       if (attempt % 10 === 0) await this.launch();
       await sleep(100);
@@ -70,7 +70,7 @@ export class Client implements JobClient {
   }
   start(input: StartInput) { return this.call<JobSummary>("start", [input]); }
   list(input: ListInput = {}) { return this.call<JobSummary[]>("list", [input]); }
-  inspect(id: string) { return this.call<Inspection>("inspect", [id]); }
+  inspect(id: string, detail: InspectDetail = "status") { return this.call<Inspection>("inspect", [id, detail]); }
   reply(id: string, message: string) { return this.call<JobSummary>("reply", [id, message]); }
   resume(id: string) { return this.call<JobSummary>("resume", [id]); }
   cancel(id: string) { return this.call<JobSummary>("cancel", [id]); }

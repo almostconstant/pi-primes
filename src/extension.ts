@@ -4,7 +4,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { createClient } from "./client.js";
-import { summarize, unfinished, type JobClient, type JobSummary, type Owner } from "./types.js";
+import { unfinished, type JobClient, type JobSummary, type Owner } from "./types.js";
 
 const messageType = "durable-job-attention";
 const compact = (text: string, limit: number) => {
@@ -27,30 +27,44 @@ function recorded(ctx: ExtensionContext, jobId: string, eventId: string) {
   });
 }
 
-// Pi may keep a new session in memory until its first user/assistant message.
+function responded(ctx: ExtensionContext, jobId: string, eventId: string) {
+  const receipt = recorded(ctx, jobId, eventId);
+  if (!receipt) return undefined;
+  const branch = ctx.sessionManager.getBranch();
+  return branch.slice(branch.findIndex(entry => entry.id === receipt.id) + 1).find(entry =>
+    entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "stop");
+}
+
+// A saved receipt alone cannot prove the parent finished its wakeup turn.
 async function persisted(ctx: ExtensionContext, jobId: string, eventId: string) {
   const entry = recorded(ctx, jobId, eventId);
+  const response = responded(ctx, jobId, eventId);
   const file = ctx.sessionManager.getSessionFile();
-  if (!entry || !file) return false;
+  if (!entry || !response || !file) return false;
   try {
     const lines = (await readFile(file, "utf8")).split("\n");
-    return lines.some((line) => {
+    let receiptSaved = false;
+    let responseSaved = false;
+    for (const line of lines) {
       try {
         const disk = JSON.parse(line);
-        return disk.id === entry.id && disk.type === "custom_message" &&
+        receiptSaved ||= disk.id === entry.id && disk.type === "custom_message" &&
           disk.customType === messageType && disk.details?.jobId === jobId && disk.details?.eventId === eventId;
-      } catch { return false; }
-    });
+        responseSaved ||= disk.id === response.id && disk.type === "message" &&
+          disk.message?.role === "assistant" && disk.message.stopReason === "stop";
+      } catch { /* Incomplete trailing lines do not confirm persistence. */ }
+    }
+    return receiptSaved && responseSaved;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 }
 
-const result = (details: unknown, recordPath?: string) => {
+const result = (details: unknown, recordPath?: string, storagePath?: string, previewTruncated = false) => {
   const output = truncateHead(JSON.stringify(details, null, 2));
   return {
-    content: [{ type: "text" as const, text: output.content + (output.truncated ? `\n[Truncated. ${recordPath ? `Full job/result: ${recordPath}` : "Inspect individual jobs for more."}]` : "") }],
+    content: [{ type: "text" as const, text: output.content + (output.truncated || previewTruncated ? `\n[Truncated. ${recordPath ? `Full job/result: ${recordPath}${storagePath ? `; transcript storage: ${storagePath}` : ""}` : "Inspect individual jobs for more."}]` : "") }],
     details,
   };
 };
@@ -61,6 +75,7 @@ export function createExtension(client: JobClient) {
       ctx: ExtensionContext;
       owner: Owner;
       timer?: ReturnType<typeof setTimeout>;
+      woken: Set<string>;
     } | undefined;
 
     const stop = () => {
@@ -82,12 +97,11 @@ export function createExtension(client: JobClient) {
           if (!current(state)) return;
           const attention = job.attention;
           if (!sameOwner(job.owner, state.owner) || !attention || attention.acknowledged) continue;
-          if (recorded(ctx, job.id, attention.id)) {
-            if (await persisted(ctx, job.id, attention.id)) {
-              if (!current(state) || !recorded(ctx, job.id, attention.id)) return;
-              await client.acknowledge(job.id, attention.id);
-            }
-          } else if (ctx.isIdle()) {
+          if (await persisted(ctx, job.id, attention.id)) {
+            if (!current(state) || !responded(ctx, job.id, attention.id)) return;
+            await client.acknowledge(job.id, attention.id);
+          } else if (current(state) && leaf === ctx.sessionManager.getLeafId() && ctx.isIdle() &&
+            !responded(ctx, job.id, attention.id) && !state.woken.has(attention.id)) {
             // Keep busy-parent events in durable registry, not Pi's clearable follow-up queue.
             pi.sendMessage({
               customType: messageType,
@@ -95,7 +109,8 @@ export function createExtension(client: JobClient) {
               content: `Durable job ${job.id}: ${attention.kind}\nGoal: ${compact(job.goal, 180)}\nReason: ${compact(attention.message, 300)}${job.question ? `\nQuestion: ${compact(job.question, 300)}` : ""}\nUse durable_inspect; request detail=result or transcript only when needed.`,
               details: { jobId: job.id, eventId: attention.id, owner: state.owner },
             }, { triggerTurn: true });
-            // sendMessage is void. Next poll verifies transcript before acknowledging.
+            // One wake attempt per lifecycle avoids retry loops after parent abort/error.
+            state.woken.add(attention.id);
           }
         }
       } catch (error) {
@@ -110,7 +125,7 @@ export function createExtension(client: JobClient) {
 
     const start = (ctx: ExtensionContext) => {
       stop();
-      const state = { ctx, owner: ownerOf(ctx) };
+      const state = { ctx, owner: ownerOf(ctx), woken: new Set<string>() };
       active = state;
       void poll(state);
     };
@@ -154,12 +169,8 @@ export function createExtension(client: JobClient) {
       name: "durable_inspect", label: "Inspect durable job", description: "Check compact status and usage. Request result or transcript explicitly; large output includes full job record path.",
       parameters: Type.Object({ id: Type.String({ minLength: 1 }), detail: Type.Optional(StringEnum(["status", "result", "transcript"] as const)) }),
       async execute(_id, params) {
-        const inspection = await client.inspect(params.id);
-        const { job, recordPath, worker, usage, blocked } = inspection;
-        const details = params.detail === "transcript" ? inspection : params.detail === "result" ?
-          { id: job.id, state: job.state, result: job.result, error: job.error, recordPath } :
-          { job: summarize(job), worker, usage, blocked, recordPath };
-        return result(details, recordPath);
+        const inspection = await client.inspect(params.id, params.detail ?? "status");
+        return result(inspection, inspection.recordPath, inspection.storagePath, inspection.truncated);
       },
     });
     pi.registerTool({
@@ -179,14 +190,14 @@ export function createExtension(client: JobClient) {
     }
     pi.registerTool({
       name: "durable_acknowledge", label: "Acknowledge durable attention",
-      description: "Acknowledge exact attention event ID, only after its notification is persisted in this owning session's active branch. Does not reply or resume.",
+      description: "Acknowledge exact attention event ID, only after its notification and a completed parent response are persisted in this owning session's active branch. Does not reply or resume.",
       parameters: Type.Object({ id: Type.String({ minLength: 1 }), eventId: Type.String({ minLength: 1 }) }),
       async execute(_id, params, _signal, _update, ctx) {
         const owner = ownerOf(ctx);
         const { job } = await client.inspect(params.id);
         if (!sameOwner(owner, ownerOf(ctx)) || !sameOwner(job.owner, owner) || job.attention?.id !== params.eventId ||
-          !(await persisted(ctx, params.id, params.eventId)) || !sameOwner(owner, ownerOf(ctx)) || !recorded(ctx, params.id, params.eventId)) {
-          throw new Error("Exact attention notification must be persisted in the owning session's active branch before acknowledgment.");
+          !(await persisted(ctx, params.id, params.eventId)) || !sameOwner(owner, ownerOf(ctx)) || !responded(ctx, params.id, params.eventId)) {
+          throw new Error("Exact attention notification and completed parent response must be persisted in the owning session's active branch before acknowledgment.");
         }
         return result(await client.acknowledge(params.id, params.eventId));
       },

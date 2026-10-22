@@ -8,7 +8,7 @@ import {
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createCodingTools, createReadTool } from "@earendil-works/pi-durable/tools";
-import type { Job } from "./types.js";
+import type { InspectDetail, Job } from "./types.js";
 
 // Task IDs make repeated executions of ask_parent reuse the same question and answer.
 const Questions = defineDoc({
@@ -31,7 +31,7 @@ export interface Runtime {
   status(): Promise<RuntimeStatus>;
   reply(message: string): Promise<void>;
   cancel(): Promise<void>;
-  inspect(): Promise<{ usage: unknown; entries: unknown[]; blocked: unknown[]; live: unknown }>;
+  inspect(detail?: InspectDetail): Promise<{ usage: unknown; entries: unknown[]; blocked: unknown[]; live: unknown; truncated: boolean }>;
   close(): Promise<void>;
 }
 
@@ -131,12 +131,27 @@ export class DurableRuntime implements Runtime {
   }
 
   async cancel() { await this.root.abort(context, { background: true }); }
-  async inspect() {
-    const entries = (await this.root.entries({}, 20, undefined, context)).items;
+  async inspect(detail: InspectDetail = "status") {
     const usage = await this.harness.snapshot(UsageDoc, this.root.id, context);
-    const { blocked } = await this.status();
-    const live = await this.harness.snapshot(LiveDoc, this.root.id, context);
-    return { usage, entries: [...entries], blocked, live };
+    const inspection = await this.harness.inspect(context);
+    const blocked = inspection.tasks.filter(task => task.state.kind === "blocked")
+      .map(task => ({ id: task.record.id, kind: task.record.kind, state: task.state }));
+    let entries: unknown[] = [];
+    let live: unknown = null;
+    let truncated = false;
+    if (detail === "transcript") {
+      const page = await this.root.entries({}, 20, undefined, context);
+      truncated = page.next !== undefined;
+      entries = page.items.map(entry => {
+        if (JSON.stringify(entry).length <= 50_000) return entry;
+        truncated = true;
+        return { id: entry.id, kind: entry.kind, omitted: "Entry exceeds preview limit; read storagePath for full transcript" };
+      });
+      const snapshot = await this.harness.snapshot(LiveDoc, this.root.id, context);
+      if (JSON.stringify(snapshot ?? null).length <= 50_000) live = snapshot;
+      else { truncated = true; live = { omitted: "Live state exceeds preview limit" }; }
+    }
+    return { usage, entries, blocked, live, truncated };
   }
   async close() { await this.harness.close(context); }
 }

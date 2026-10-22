@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { JobStore } from "./store.js";
-import { summarize, unfinished, type Attention, type Job, type JobClient, type ListInput, type Owner, type StartInput } from "./types.js";
+import { summarize, unfinished, type Attention, type InspectDetail, type Job, type JobClient, type ListInput, type Owner, type StartInput } from "./types.js";
 import type { Runtime } from "./runtime.js";
 
 type RuntimeFactory = (directory: string, job: Job) => Promise<Runtime>;
@@ -92,11 +92,18 @@ export class Engine implements JobClient {
       .sort((a, b) => b.createdAt - a.createdAt).map(summarize);
   }); }
 
-  inspect(id: string) { return this.serial(async () => {
+  inspect(id: string, detail: InspectDetail = "status") { return this.serial(async () => {
+    if (!["status", "result", "transcript"].includes(detail)) throw new Error("Invalid inspection detail");
     const job = this.get(id);
     const active = this.runtime?.id === id ? this.runtime.instance : null;
     const runtime = active ?? await this.openRuntime(join(this.store.path(id), "durable"), job);
-    try { return { recordPath: join(this.store.path(id), "job.json"), job, worker: { pid: process.pid }, ...await runtime.inspect() }; }
+    try {
+      const inspection = await runtime.inspect(detail);
+      const result = detail === "status" ? {} : { result: job.result?.slice(0, 100_000) ?? null };
+      return { recordPath: join(this.store.path(id), "job.json"), storagePath: join(this.store.path(id), "durable"),
+        job: { ...summarize(job), ...result }, worker: { pid: process.pid }, ...inspection,
+        truncated: inspection.truncated || (detail !== "status" && (job.result?.length ?? 0) > 100_000) };
+    }
     finally { if (!active) await runtime.close(); }
   }); }
 

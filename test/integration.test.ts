@@ -48,7 +48,7 @@ test("detached lifecycle, durable discovery, questions, worker SIGKILL, unsafe r
   assert.equal(jobs.length, 1);
   const first = jobs[0]!;
   assert.equal(first.attention?.kind, "completed");
-  assert.equal((await client.inspect(first.id)).job.result, "Fixture result");
+  assert.equal((await client.inspect(first.id, "result")).job.result, "Fixture result");
   assert.equal((await stat(join(home, "worker.sock"))).mode & 0o777, 0o600);
   await assert.rejects(client.acknowledge(first.id, "old-event"), /changed/);
   const adopted = await client.attach(first.id, { sessionId: "new-parent", sessionFile: null });
@@ -75,7 +75,7 @@ test("detached lifecycle, durable discovery, questions, worker SIGKILL, unsafe r
   await until(() => client.list(), jobs => jobs.some(job => job.state === "waiting_for_input"));
   await client.reply(interrupted.id, "Engineers");
   await until(() => client.inspect(interrupted.id), inspection => inspection.job.state === "completed");
-  const answered = (await client.inspect(interrupted.id)).job;
+  const answered = (await client.inspect(interrupted.id, "result")).job;
   assert.match(answered.result!, /Engineers/);
   await client.acknowledge(answered.id, answered.attention!.id);
 
@@ -86,7 +86,7 @@ test("detached lifecycle, durable discovery, questions, worker SIGKILL, unsafe r
   await sleep(1200); // SIGKILL cannot clean up descendants; wait for fixture command to finish.
   await boot();
   await client.resume(unsafe.id);
-  const recovered = await until(() => client.inspect(unsafe.id), inspection => inspection.job.state === "completed");
+  const recovered = await until(() => client.inspect(unsafe.id, "result"), inspection => inspection.job.state === "completed");
   assert.equal(await readFile(effects, "utf8"), "x", "interrupted unsafe tool must not replay");
   assert.match(recovered.job.result!, /interrupted/i);
   await client.acknowledge(unsafe.id, recovered.job.attention!.id);

@@ -12,7 +12,7 @@ function runtime(): Runtime {
   return {
     async run() {}, async reply() {}, async cancel() {}, async close() {},
     async status(): Promise<RuntimeStatus> { return { state: "running", activity: "working", question: null, questionId: null, result: null, error: null, blocked: [] }; },
-    async inspect() { return { usage: {}, entries: [], blocked: [], live: {} }; },
+    async inspect() { return { usage: {}, entries: [], blocked: [], live: {}, truncated: false }; },
   };
 }
 const input = (cwd: string) => ({ goal: "Generic goal", context: "", cwd,
@@ -51,6 +51,26 @@ test("interrupted cancellation cannot accidentally resume execution", async () =
     await assert.rejects(recovered.resume(job.id), /Cancellation requested/);
     assert.equal((await recovered.cancel(job.id)).state, "cancelled");
     await recovered.close();
+  } finally { await engine.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("result preview is bounded without changing persisted result", async () => {
+  const home = await mkdtemp(join(tmpdir(), "primes-preview-"));
+  const store = new JobStore(home);
+  const instance = runtime();
+  const output = "x".repeat(150_000);
+  instance.status = async () => ({ state: "completed", activity: "completed", question: null, questionId: null,
+    result: output, error: null, blocked: [] });
+  const engine = new Engine(store, async () => instance);
+  try {
+    await engine.initialize();
+    const job = await engine.start(input(home));
+    await engine.tick();
+    assert.equal((await engine.inspect(job.id)).job.result, undefined);
+    const preview = await engine.inspect(job.id, "result");
+    assert.equal(preview.job.result?.length, 100_000);
+    assert.equal(preview.truncated, true);
+    assert.equal((await store.load())[0]!.result, output);
   } finally { await engine.close(); await rm(home, { recursive: true, force: true }); }
 });
 

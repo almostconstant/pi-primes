@@ -36,11 +36,17 @@ export type StartInput = {
   tools?: Job["tools"];
 };
 export type ListInput = { cwd?: string; all?: boolean };
-export type Inspection = { recordPath: string; job: Job; worker: { pid: number }; usage: unknown; entries: unknown[]; blocked: unknown[]; live: unknown };
+export type InspectDetail = "status" | "result" | "transcript";
+export type Inspection = {
+  recordPath: string; storagePath: string;
+  job: JobSummary & { result?: string | null };
+  worker: { pid: number }; usage: unknown; entries: unknown[]; blocked: unknown[]; live: unknown;
+  truncated: boolean;
+};
 export interface JobClient {
   start(input: StartInput): Promise<JobSummary>;
   list(input?: ListInput): Promise<JobSummary[]>;
-  inspect(id: string): Promise<Inspection>;
+  inspect(id: string, detail?: InspectDetail): Promise<Inspection>;
   reply(id: string, message: string): Promise<JobSummary>;
   resume(id: string): Promise<JobSummary>;
   cancel(id: string): Promise<JobSummary>;
