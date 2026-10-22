@@ -27,7 +27,7 @@ Ask Pi to delegate a goal. `durable_start` accepts:
 }
 ```
 
-Parent's selected provider/model is captured. Worker loads standard Pi credentials and model configuration itself, including request-time OAuth refresh. It does **not** inherit parent transcript, skills, project instructions, MCP servers, extension-only providers, virtual models, or runtime API-key overrides. Supply relevant instructions/context explicitly. Restart worker to reload model configuration.
+Parent's selected provider/model is captured. Worker loads standard Pi credentials and model configuration itself, including request-time OAuth refresh. It does **not** inherit parent transcript, skills, project instructions, MCP servers, extension-only providers, virtual models, or runtime API-key overrides. Supply relevant instructions/context explicitly. Restart worker to reload model configuration or code after updating this checkout. Stop it gracefully first; resume interrupted jobs explicitly.
 
 ### Capabilities
 
@@ -50,7 +50,7 @@ Parent's selected provider/model is captured. Worker loads standard Pi credentia
 | `durable_resume` | Explicitly recover interrupted worker execution |
 | `durable_cancel` | Abort job and active commands; retain history and partial artifacts |
 | `durable_attach` | Transfer ownership/notification routing to current parent session |
-| `durable_acknowledge` | Acknowledge exact notification already persisted in owning parent branch |
+| `durable_acknowledge` | Acknowledge exact notification and completed parent response persisted in owning branch |
 
 `durable_list` has independent `allScopes` and `allHistory` switches. Listing never adopts jobs. `/durable-jobs`, `/durable-jobs all history`, and `/durable-jobs attach <id>` provide UI discovery without injecting inventory into model context.
 
@@ -60,11 +60,15 @@ Headless recovery does not require parent Pi or its transcript:
 npm run jobs -- list --global
 npm run jobs -- list --global --all
 npm run jobs -- inspect JOB_ID
+npm run jobs -- inspect JOB_ID result
+npm run jobs -- inspect JOB_ID transcript
 npm run jobs -- resume JOB_ID
 npm run jobs -- reply JOB_ID "Missing context"
 npm run jobs -- cancel JOB_ID
 npm run jobs -- ack JOB_ID EVENT_ID
 ```
+
+Inspection detail is selected in the worker, before transport. Status/results never load transcript entries or live tool payloads. Transcript preview contains at most 20 recent entries, omits individual entries/live state over 50,000 serialized characters, and marks omitted/older content with `truncated`. Result previews cap at 100,000 characters. `recordPath` points to the complete job/result; `storagePath` points to full durable transcript storage. Preview limits do not change persisted data or replay safety. Default inspection returns compact job metadata, not supplied context/input.
 
 One job executes at a time, including time spent waiting for input. Another start is rejected, not queued. Arbitrarily many historical/interrupted jobs can remain in registry. Completed/failed jobs cannot be extended with another prompt in v1; start another job. Mid-run steering is not implemented; reply answers an explicit pending question only.
 
@@ -76,7 +80,9 @@ Child explicitly calls `ask_parent` when blocked on missing context, authority, 
 
 Needs-input, completion, failure, and interrupted-worker events produce one compact custom parent message. Idle parent wakes automatically. While parent is busy, event remains in durable registry and is delivered once idle; it is not put into Pi's clearable follow-up queue. While parent is offline, event waits for owning session to reconnect. Different sessions must attach explicitly.
 
-Acknowledgment follows confirmed persistence in active parent branch, never merely queueing. Reconnect checks transcript receipts before retrying. Ownership transfer rotates an unacknowledged event ID so stale parents cannot consume its notification. This is durable receipt/deduplication, not exactly-once model execution. In-memory parent sessions cannot confirm disk persistence; their outcomes remain discoverable as unacknowledged.
+Acknowledgment requires both the notification and a subsequent completed assistant response (`stopReason: "stop"`) persisted in active parent branch. A saved receipt alone does not consume the wakeup: reconnect retries it if the parent crashed before responding. Aborted/error/tool-call-only responses do not count. Each session/branch lifecycle attempts a given wakeup once, avoiding automatic spending loops after parent errors or aborts; reconnect/reload or branch re-entry permits another attempt. Busy parents still wait until idle.
+
+Reconnect deduplicates already completed responses. Ownership transfer rotates an unacknowledged event ID so stale parents cannot consume its notification. This proves a completed response, not successful external effects or exactly-once model execution. In-memory parent sessions cannot confirm disk persistence; their outcomes remain discoverable as unacknowledged.
 
 ## Persistence and recovery
 
@@ -119,4 +125,4 @@ Tests use actual durable JSONL storage and deterministic provider fixtures, incl
 
 ## Current limits
 
-No parallel execution, remote workers, custom TUI, automatic integration, inherited tools/resources, mid-run steering, or recursive agents. No hard token/cost/wall-time caps yet: detached jobs can spend until completion, failure, explicit question, or cancellation. Use bounded goals and monitor usage. Startup/transport timeouts are not execution budgets.
+No parallel execution, remote workers, custom TUI, automatic integration, inherited tools/resources, mid-run steering, or recursive agents. No hard token/cost/wall-time caps yet: detached jobs can spend until completion, failure, explicit question, or cancellation. Use bounded goals and monitor usage. Worker startup allows about 30 seconds, including cold dependency loading. Startup/transport timeouts are not execution budgets.
