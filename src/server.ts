@@ -49,8 +49,7 @@ export async function serve(engine: Engine, home: string) {
     void engine.tick().catch(error => {
       // A registry persistence failure is fatal: never continue with unrecorded state.
       console.error("Monitor failed", error);
-      process.exitCode = 1;
-      void shutdown();
+      void shutdown().then(() => process.exit(1), failure => { console.error(failure); process.exit(1); });
     }).finally(() => { ticking = false; });
   }, 500);
   let closing: Promise<void> | undefined;

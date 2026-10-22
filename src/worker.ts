@@ -14,5 +14,8 @@ const engine = new Engine(new JobStore(join(home, "jobs")), (directory, job) => 
 await engine.initialize();
 const server = await serve(engine, home);
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.on(signal, () => { void server.close().catch(error => { console.error(error); process.exitCode = 1; }); });
+  process.once(signal, () => {
+    // Provider connection pools may outlive closed harnesses; release process lock after cleanup.
+    void server.close().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+  });
 }
