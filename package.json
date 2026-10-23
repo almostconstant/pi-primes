@@ -1,0 +1,30 @@
+{
+  "name": "pi-primes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Concurrent durable jobs for Pi",
+  "keywords": ["pi-package"],
+  "engines": { "node": ">=22" },
+  "pi": { "extensions": ["./src/extension.ts"] },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "jobs": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/chord": "1.4.0",
+    "tsx": "^4.20.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.2.0 <2",
+    "@earendil-works/pi-ai": ">=1.2.0 <2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
